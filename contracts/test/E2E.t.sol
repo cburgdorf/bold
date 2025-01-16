@@ -159,6 +159,10 @@ contract E2ETest is Test {
     ICurveStableSwapNG curveUsdcBold;
     ILiquidityGaugeV6 curveUsdcBoldGauge;
     CurveV2GaugeRewards curveUsdcBoldInitiative;
+    ICurveStableSwapNG curveLusdBold;
+    ILiquidityGaugeV6 curveLusdBoldGauge;
+    CurveV2GaugeRewards curveLusdBoldInitiative;
+    address defiCollectiveInitiative;
     BranchContracts[] branches;
 
     address[] ownables;
@@ -177,9 +181,13 @@ contract E2ETest is Test {
         boldToken = IBoldToken(BOLD = json.readAddress(".boldToken"));
         hintHelpers = IHintHelpers(json.readAddress(".hintHelpers"));
         governance = Governance(json.readAddress(".governance.governance"));
-        curveUsdcBold = ICurveStableSwapNG(json.readAddress(".governance.curvePool"));
-        curveUsdcBoldGauge = ILiquidityGaugeV6(json.readAddress(".governance.gauge"));
-        curveUsdcBoldInitiative = CurveV2GaugeRewards(json.readAddress(".governance.curveV2GaugeRewardsInitiative"));
+        curveUsdcBold = ICurveStableSwapNG(json.readAddress(".governance.curveUsdcBoldPool"));
+        curveUsdcBoldGauge = ILiquidityGaugeV6(json.readAddress(".governance.curveUsdcBoldGauge"));
+        curveUsdcBoldInitiative = CurveV2GaugeRewards(json.readAddress(".governance.curveUsdcBoldInitiative"));
+        curveLusdBold = ICurveStableSwapNG(json.readAddress(".governance.curveLusdBoldPool"));
+        curveLusdBoldGauge = ILiquidityGaugeV6(json.readAddress(".governance.curveLusdBoldGauge"));
+        curveLusdBoldInitiative = CurveV2GaugeRewards(json.readAddress(".governance.curveLusdBoldInitiative"));
+        defiCollectiveInitiative = json.readAddress(".governance.defiCollectiveInitiative");
 
         vm.label(address(collateralRegistry), "CollateralRegistry");
         vm.label(address(hintHelpers), "HintHelpers");
@@ -601,6 +609,13 @@ contract E2ETest is Test {
                 string.concat("Ownership of ", vm.getLabel(ownables[i]), " should have been renounced")
             );
         }
+
+        ILiquidityGaugeV6[1] memory gauges = [curveUsdcBoldGauge];
+
+        for (uint256 i = 0; i < gauges.length; ++i) {
+            address gaugeManager = gauges[i].manager();
+            assertEq(gaugeManager, address(0), "Gauge manager role should have been renounced");
+        }
     }
 
     function test_Initially_NewInitiativeCannotBeRegistered() external {
@@ -655,6 +670,9 @@ contract E2ETest is Test {
             assertEqDecimal(borrowed, 0, 18, "Mainnet deployment script should not have borrowed anything");
             assertNotEq(address(curveUsdcBoldGauge), address(0), "Mainnet should have USDC-BOLD gauge");
             assertNotEq(address(curveUsdcBoldInitiative), address(0), "Mainnet should have USDC-BOLD initiative");
+            assertNotEq(address(curveLusdBold), address(0), "Mainnet should have LUSD-BOLD pool");
+            assertNotEq(address(curveLusdBoldGauge), address(0), "Mainnet should have LUSD-BOLD gauge");
+            assertNotEq(address(curveLusdBoldInitiative), address(0), "Mainnet should have LUSD-BOLD initiative");
         }
 
         address borrower = providerOf[BOLD] = makeAddr("borrower");
@@ -670,13 +688,25 @@ contract E2ETest is Test {
         {
             skip(5 minutes);
 
-            uint256 boldAmount = boldToken.balanceOf(borrower) * 4 / 5;
+            uint256 boldAmount = boldToken.balanceOf(borrower) * 2 / 5;
             uint256 usdcAmount = boldAmount * 10 ** usdc.decimals() / 10 ** boldToken.decimals();
+            uint256 lusdAmount = boldAmount;
+
             _addCurveLiquidity(liquidityProvider, curveUsdcBold, boldAmount, BOLD, usdcAmount, USDC);
+
+            if (address(curveLusdBold) != address(0)) {
+                _addCurveLiquidity(liquidityProvider, curveLusdBold, boldAmount, BOLD, lusdAmount, LUSD);
+            }
 
             if (address(curveUsdcBoldGauge) != address(0)) {
                 _depositIntoCurveGauge(
                     liquidityProvider, curveUsdcBoldGauge, curveUsdcBold.balanceOf(liquidityProvider)
+                );
+            }
+
+            if (address(curveLusdBoldGauge) != address(0)) {
+                _depositIntoCurveGauge(
+                    liquidityProvider, curveLusdBoldGauge, curveLusdBold.balanceOf(liquidityProvider)
                 );
             }
         }
@@ -719,7 +749,7 @@ contract E2ETest is Test {
 
         address staker = makeAddr("staker");
         {
-            uint256 lqtyStake = 10_000 ether;
+            uint256 lqtyStake = 30_000 ether;
             _depositLQTY(staker, lqtyStake);
 
             skip(5 minutes);
@@ -737,11 +767,25 @@ contract E2ETest is Test {
             );
             assertApproxEqAbsDecimal(staker.balance, ethAmount * lqtyStake / totalLQTYStaked, 1e4, 18, "ETH reward");
 
-            if (address(curveUsdcBoldInitiative) != address(0)) {
+            if (
+                address(curveUsdcBoldInitiative) != address(0) || address(curveLusdBoldInitiative) != address(0)
+                    || defiCollectiveInitiative != address(0)
+            ) {
                 skip(5 minutes);
-
                 _allocateLQTY_begin(staker);
-                _allocateLQTY_vote(address(curveUsdcBoldInitiative), 10_000 ether);
+
+                if (address(curveUsdcBoldInitiative) != address(0)) {
+                    _allocateLQTY_vote(address(curveUsdcBoldInitiative), int256(lqtyStake / 3));
+                }
+
+                if (address(curveLusdBoldInitiative) != address(0)) {
+                    _allocateLQTY_vote(address(curveLusdBoldInitiative), int256(lqtyStake / 3));
+                }
+
+                if (defiCollectiveInitiative != address(0)) {
+                    _allocateLQTY_vote(defiCollectiveInitiative, int256(lqtyStake / 3));
+                }
+
                 _allocateLQTY_end();
             }
         }
@@ -828,6 +872,10 @@ contract E2ETest is Test {
     function test_ManagerOfCurveGauge_CanReassignRewardDistributor() external {
         vm.skip(address(curveUsdcBoldGauge) == address(0));
 
+        address manager = curveUsdcBoldGauge.manager();
+        vm.label(manager, "manager");
+        vm.skip(manager == address(0));
+
         address newRewardDistributor = makeAddr("newRewardDistributor");
         uint256 rewardAmount = 10_000 ether;
         _openTrove(0, newRewardDistributor, 0, rewardAmount);
@@ -838,8 +886,6 @@ contract E2ETest is Test {
         curveUsdcBoldGauge.deposit_reward_token(BOLD, rewardAmount, 7 days);
         vm.stopPrank();
 
-        address manager = curveUsdcBoldGauge.manager();
-        vm.label(manager, "manager");
         vm.prank(manager);
         curveUsdcBoldGauge.set_reward_distributor(BOLD, newRewardDistributor);
 
